@@ -16,12 +16,25 @@ jobs:
       - uses: gradle/actions/setup-gradle@v4
         with:
           gradle-version: '8.9'
-      - run: gradle assembleDebug --no-daemon
-      - run: cp app/build/outputs/apk/debug/app-debug.apk FogMap.apk
-      - uses: actions/upload-artifact@v4
+      - run: base64 -d app/fogmap.jks.b64 > app/fogmap.jks
+      - name: Build
+        id: build
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon 2>&1 | tee build.log
+      - name: Publish build log on failure
+        if: steps.build.outcome == 'failure'
+        uses: softprops/action-gh-release@v2
         with:
-          name: FogMap-apk
-          path: FogMap.apk
+          tag_name: log-${{ github.run_number }}
+          name: Build log ${{ github.run_number }}
+          prerelease: true
+          files: build.log
+      - name: Stop on failure
+        if: steps.build.outcome == 'failure'
+        run: exit 1
+      - run: cp app/build/outputs/apk/debug/app-debug.apk FogMap.apk
       - uses: softprops/action-gh-release@v2
         with:
           tag_name: build-${{ github.run_number }}
