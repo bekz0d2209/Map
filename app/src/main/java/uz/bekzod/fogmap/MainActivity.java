@@ -3,81 +3,69 @@ package uz.bekzod.fogmap;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
-import android.app.DatePickerDialog;
+import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
 import android.database.Cursor;
-import android.graphics.Color;
-import android.graphics.drawable.GradientDrawable;
 import android.net.Uri;
 import android.os.Build;
 import android.os.Bundle;
+import android.os.Environment;
 import android.os.Handler;
 import android.os.Looper;
 import android.os.PowerManager;
+import android.provider.MediaStore;
 import android.provider.Settings;
-import android.util.TypedValue;
+import android.util.JsonReader;
+import android.util.JsonWriter;
 import android.view.Gravity;
 import android.view.View;
-import android.widget.Button;
+import android.view.inputmethod.InputMethodManager;
 import android.widget.FrameLayout;
+import android.widget.ImageView;
 import android.widget.LinearLayout;
 import android.widget.TextView;
 import android.widget.Toast;
 
-import org.osmdroid.api.IGeoPoint;
 import org.osmdroid.config.Configuration;
-import org.osmdroid.tileprovider.tilesource.TileSourceFactory;
-import org.osmdroid.util.BoundingBox;
-import org.osmdroid.util.GeoPoint;
-import org.osmdroid.views.CustomZoomButtonsController;
-import org.osmdroid.views.MapView;
-import org.osmdroid.views.overlay.Polyline;
-import org.osmdroid.views.overlay.mylocation.GpsMyLocationProvider;
-import org.osmdroid.views.overlay.mylocation.MyLocationNewOverlay;
 
 import java.io.File;
+import java.io.FileOutputStream;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.OutputStream;
+import java.io.OutputStreamWriter;
+import java.nio.charset.StandardCharsets;
 import java.text.SimpleDateFormat;
 import java.util.ArrayList;
-import java.util.Calendar;
+import java.util.Date;
 import java.util.List;
-import java.util.Locale;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
-    private static final int REQ_PERM = 1;
-    private static final int C_BTN = 0xDD1E2A3A;
-    private static final int C_ACTIVE = 0xFF2E7D32;
-    private static final int C_REC = 0xFFC62828;
-    private static final Locale RU = new Locale("ru");
+    private static final int REQ_LOC = 1, REQ_BG = 2, REQ_IMPORT = 3;
+    private static final String[] NAMES = {"Карта", "Дни", "Места", "Статистика", "Настройки"};
+    private static final int[] ICONS = {R.drawable.ic_map, R.drawable.ic_days, R.drawable.ic_pin, R.drawable.ic_stats, R.drawable.ic_set};
 
-    private MapView map;
-    private FogOverlay fog;
-    private MyLocationNewOverlay me;
-    private Polyline route;
-    private Button bAll, bPrev, bDay, bNext, bRec, bMe;
-    private TextView stats;
-    private boolean dayMode = false;
-    private boolean startAfterPermission = false;
-    private boolean centeredOnce = false;
-    private final Calendar day = Calendar.getInstance();
+    public final ExecutorService io = Executors.newSingleThreadExecutor();
     private final Handler handler = new Handler(Looper.getMainLooper());
-    private final ExecutorService ex = Executors.newSingleThreadExecutor();
-    private SharedPreferences prefs;
+    private FrameLayout content;
+    private Screen[] screens;
+    private MapScreen mapScreen;
+    private final ImageView[] navIcons = new ImageView[5];
+    private final TextView[] navLabels = new TextView[5];
+    private TextView badge;
+    private int cur = -1;
+    private boolean resumed = false;
 
     private final Runnable tick = new Runnable() {
         @Override
         public void run() {
-            if (!dayMode) {
-                fog.refresh();
-                updateAllStats();
-            } else if (isToday()) {
-                loadDay(false);
-            }
-            updateRecButton();
+            if (cur >= 0) screens[cur].refresh();
+            updateBadge();
             handler.postDelayed(this, 4000);
         }
     };
@@ -85,7 +73,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
-        prefs = getSharedPreferences("fogmap", MODE_PRIVATE);
+        getWindow().setStatusBarColor(Ui.BG);
+        getWindow().setNavigationBarColor(Ui.SURF);
 
         Configuration.getInstance().load(this, getSharedPreferences("osmdroid", MODE_PRIVATE));
         Configuration.getInstance().setUserAgentValue(getPackageName());
@@ -93,340 +82,334 @@ public class MainActivity extends Activity {
         Configuration.getInstance().setOsmdroidBasePath(base);
         Configuration.getInstance().setOsmdroidTileCache(new File(base, "tiles"));
 
-        buildUi();
+        TrackerService.createChannels(this);
 
-        map.setTileSource(TileSourceFactory.MAPNIK);
-        map.setMultiTouchControls(true);
-        map.getZoomController().setVisibility(CustomZoomButtonsController.Visibility.NEVER);
-        map.setMinZoomLevel(3.0);
-        map.setMaxZoomLevel(21.0);
-        map.getController().setZoom((double) prefs.getFloat("zoom", 16f));
-        map.getController().setCenter(new GeoPoint(prefs.getFloat("lat", 41.55f), prefs.getFloat("lon", 60.63f)));
-
-        fog = new FogOverlay(map, Db.get(this));
-        map.getOverlays().add(fog);
-
-        route = new Polyline(map);
-        route.getOutlinePaint().setColor(0xFFE53935);
-        route.getOutlinePaint().setStrokeWidth(dp(4));
-
-        me = new MyLocationNewOverlay(new GpsMyLocationProvider(this), map);
-        map.getOverlays().add(me);
-        me.runOnFirstFix(() -> runOnUiThread(() -> {
-            GeoPoint g = me.getMyLocation();
-            if (!centeredOnce && !dayMode && g != null) {
-                centeredOnce = true;
-                map.getController().animateTo(g);
-            }
-        }));
-
-        bAll.setOnClickListener(v -> setDayMode(false));
-        bDay.setOnClickListener(v -> new DatePickerDialog(this, (view, y, m, d) -> {
-            day.set(y, m, d);
-            setDayMode(true);
-        }, day.get(Calendar.YEAR), day.get(Calendar.MONTH), day.get(Calendar.DAY_OF_MONTH)).show());
-        bPrev.setOnClickListener(v -> { day.add(Calendar.DAY_OF_MONTH, -1); setDayMode(true); });
-        bNext.setOnClickListener(v -> { day.add(Calendar.DAY_OF_MONTH, 1); setDayMode(true); });
-        bMe.setOnClickListener(v -> {
-            GeoPoint g = me.getMyLocation();
-            if (g != null) {
-                map.getController().setZoom(19.0);
-                map.getController().animateTo(g);
-            } else {
-                toast("Ищу GPS… выйди на открытое место");
-            }
-        });
-        bRec.setOnClickListener(v -> {
-            if (TrackerService.running) stopRec(); else startRec();
-        });
-
-        setDayMode(false);
-        if (!hasLocation()) requestPerms();
-    }
-
-    // ---------- UI ----------
-
-    private void buildUi() {
-        FrameLayout root = new FrameLayout(this);
-        map = new MapView(this);
-        root.addView(map, new FrameLayout.LayoutParams(-1, -1));
-
-        LinearLayout top = new LinearLayout(this);
-        top.setOrientation(LinearLayout.HORIZONTAL);
-        top.setPadding(dp(8), dp(8), dp(8), dp(8));
-        bAll = btn("Всё время");
-        bPrev = btn("‹");
-        bDay = btn("День");
-        bNext = btn("›");
-        top.addView(bAll, wrap());
-        top.addView(bPrev, wrap());
-        top.addView(bDay, wrap());
-        top.addView(bNext, wrap());
-        root.addView(top, new FrameLayout.LayoutParams(-1, -2, Gravity.TOP));
-
-        LinearLayout bottom = new LinearLayout(this);
-        bottom.setOrientation(LinearLayout.VERTICAL);
-        bottom.setPadding(dp(8), dp(8), dp(8), dp(8));
-        LinearLayout row = new LinearLayout(this);
-        row.setGravity(Gravity.END);
-        bMe = btn("◎ Где я");
-        bRec = btn("● Запись");
-        row.addView(bMe, wrap());
-        row.addView(bRec, wrap());
-        bottom.addView(row, new LinearLayout.LayoutParams(-1, -2));
-
-        stats = new TextView(this);
-        stats.setTextColor(Color.WHITE);
-        stats.setTextSize(14);
-        stats.setPadding(dp(12), dp(8), dp(12), dp(8));
-        stats.setBackground(bg(C_BTN, 12));
-        LinearLayout.LayoutParams slp = new LinearLayout.LayoutParams(-1, -2);
-        slp.topMargin = dp(6);
-        bottom.addView(stats, slp);
-        root.addView(bottom, new FrameLayout.LayoutParams(-1, -2, Gravity.BOTTOM));
-
+        LinearLayout root = Ui.col(this);
+        root.setBackgroundColor(Ui.BG);
+        content = new FrameLayout(this);
+        root.addView(content, new LinearLayout.LayoutParams(-1, 0, 1));
+        View line = new View(this);
+        line.setBackgroundColor(Ui.LINE);
+        root.addView(line, Ui.lp(-1, 1));
+        root.addView(buildNav(), Ui.lp(-1, Ui.dp(this, 66)));
         setContentView(root);
+
+        mapScreen = new MapScreen(this);
+        screens = new Screen[]{mapScreen, new DaysScreen(this), new PlacesScreen(this), new StatsScreen(this), new SettingsScreen(this)};
+        show(getIntent().getIntExtra("tab", 0));
+        ensurePermissions();
     }
 
-    private Button btn(String text) {
-        Button b = new Button(this);
-        b.setText(text);
-        b.setAllCaps(false);
-        b.setTextColor(Color.WHITE);
-        b.setTextSize(15);
-        b.setMinWidth(0);
-        b.setMinimumWidth(0);
-        b.setPadding(dp(14), 0, dp(14), 0);
-        b.setBackground(bg(C_BTN, 22));
-        return b;
-    }
-
-    private LinearLayout.LayoutParams wrap() {
-        LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, dp(44));
-        lp.setMargins(dp(3), 0, dp(3), 0);
-        return lp;
-    }
-
-    private GradientDrawable bg(int color, int radiusDp) {
-        GradientDrawable g = new GradientDrawable();
-        g.setColor(color);
-        g.setCornerRadius(dp(radiusDp));
-        return g;
-    }
-
-    private int dp(int v) {
-        return (int) TypedValue.applyDimension(TypedValue.COMPLEX_UNIT_DIP, v, getResources().getDisplayMetrics());
-    }
-
-    private void toast(String s) {
-        Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
-    }
-
-    // ---------- Modes ----------
-
-    private void setDayMode(boolean on) {
-        dayMode = on;
-        fog.setEnabled(!on);
-        map.getOverlays().remove(route);
-        if (on) {
-            int idx = map.getOverlays().indexOf(me);
-            map.getOverlays().add(Math.max(0, idx), route);
-        }
-        bAll.setBackground(bg(on ? C_BTN : C_ACTIVE, 22));
-        bDay.setBackground(bg(on ? C_ACTIVE : C_BTN, 22));
-        bDay.setText(on ? fmtDay() : "День");
-        bPrev.setVisibility(on ? View.VISIBLE : View.GONE);
-        bNext.setVisibility(on ? View.VISIBLE : View.GONE);
-        if (on) {
-            loadDay(true);
-        } else {
-            fog.refresh();
-            updateAllStats();
-        }
-        map.invalidate();
-    }
-
-    private void loadDay(final boolean zoom) {
-        final long from = dayStart(), to = from + 24L * 3600L * 1000L;
-        final String title = fmtDay();
-        ex.execute(() -> {
-            final List<GeoPoint> pts = new ArrayList<>();
-            double dist = 0;
-            long first = 0, last = 0, pt = 0;
-            double plat = 0, plon = 0;
-            Cursor c = Db.get(this).getReadableDatabase().rawQuery(
-                    "SELECT t, lat, lon FROM points WHERE t >= ? AND t < ? ORDER BY t",
-                    new String[]{Long.toString(from), Long.toString(to)});
-            try {
-                while (c.moveToNext()) {
-                    long t = c.getLong(0);
-                    double la = c.getDouble(1), lo = c.getDouble(2);
-                    if (pts.isEmpty()) first = t;
-                    else if (t - pt <= 120000L) dist += Geo.dist(plat, plon, la, lo);
-                    last = t;
-                    pts.add(new GeoPoint(la, lo));
-                    pt = t; plat = la; plon = lo;
-                }
-            } finally {
-                c.close();
+    private View buildNav() {
+        LinearLayout nav = Ui.row(this);
+        nav.setBackgroundColor(Ui.SURF);
+        for (int i = 0; i < 5; i++) {
+            final int idx = i;
+            FrameLayout cell = new FrameLayout(this);
+            LinearLayout v = Ui.col(this);
+            v.setGravity(Gravity.CENTER);
+            ImageView ic = new ImageView(this);
+            ic.setImageResource(ICONS[i]);
+            v.addView(ic, Ui.lp(Ui.dp(this, 24), Ui.dp(this, 24)));
+            TextView t = Ui.tv(this, NAMES[i], 11, Ui.MUTE, Ui.MED);
+            t.setPadding(0, Ui.dp(this, 3), 0, 0);
+            t.setSingleLine(true);
+            v.addView(t);
+            cell.addView(v, new FrameLayout.LayoutParams(-1, -1));
+            navIcons[i] = ic;
+            navLabels[i] = t;
+            if (i == 2) {
+                badge = Ui.tv(this, "", 11, Ui.WHITE, Ui.MED);
+                badge.setGravity(Gravity.CENTER);
+                badge.setBackground(Ui.bg(this, Ui.ACC, 9));
+                badge.setPadding(Ui.dp(this, 5), 0, Ui.dp(this, 5), 0);
+                badge.setMinWidth(Ui.dp(this, 18));
+                badge.setVisibility(View.GONE);
+                FrameLayout.LayoutParams bl = new FrameLayout.LayoutParams(-2, Ui.dp(this, 18), Gravity.TOP | Gravity.CENTER_HORIZONTAL);
+                bl.topMargin = Ui.dp(this, 7);
+                bl.leftMargin = Ui.dp(this, 22);
+                cell.addView(badge, bl);
             }
-            final double fd = dist;
-            final long ff = first, fl = last;
+            cell.setOnClickListener(x -> show(idx));
+            nav.addView(cell, new LinearLayout.LayoutParams(0, -1, 1));
+        }
+        return nav;
+    }
+
+    void show(int i) {
+        if (i < 0 || i >= screens.length) i = 0;
+        if (i == cur) {
+            screens[i].refresh();
+            return;
+        }
+        if (cur >= 0) screens[cur].onHide();
+        content.removeAllViews();
+        content.addView(screens[i].view(), new FrameLayout.LayoutParams(-1, -1));
+        cur = i;
+        for (int k = 0; k < 5; k++) {
+            navIcons[k].setColorFilter(k == i ? Ui.ACC : Ui.MUTE);
+            navLabels[k].setTextColor(k == i ? Ui.INK : Ui.MUTE);
+        }
+        if (resumed) screens[i].onShow();
+    }
+
+    void showMapAt(double lat, double lon) {
+        show(0);
+        mapScreen.centerOn(lat, lon);
+    }
+
+    void updateBadge() {
+        io.execute(() -> {
+            int n = Db.get(this).pendingCount();
             runOnUiThread(() -> {
-                if (!dayMode || !title.equals(fmtDay())) return;
-                route.setPoints(pts);
-                if (pts.isEmpty()) {
-                    stats.setText(title + "\nВ этот день записей нет");
-                } else {
-                    SimpleDateFormat hm = new SimpleDateFormat("HH:mm", RU);
-                    stats.setText(String.format(RU, "%s · пройдено %.2f км\nС %s до %s · точек: %d",
-                            title, fd / 1000.0, hm.format(ff), hm.format(fl), pts.size()));
-                    if (zoom) {
-                        if (pts.size() > 1) {
-                            final BoundingBox bb = BoundingBox.fromGeoPoints(pts);
-                            map.post(() -> map.zoomToBoundingBox(bb, true, dp(64)));
-                        } else {
-                            map.getController().animateTo(pts.get(0));
-                        }
-                    }
-                }
-                map.invalidate();
+                badge.setText(String.valueOf(n));
+                badge.setVisibility(n > 0 ? View.VISIBLE : View.GONE);
             });
         });
     }
 
-    private void updateAllStats() {
-        ex.execute(() -> {
-            long n = Db.get(this).cellCount();
-            double area = n * 4.0;
-            float km = prefs.getFloat("total_m", 0f) / 1000f;
-            String a = area < 1_000_000 ? String.format(RU, "%,.0f м²", area) : String.format(RU, "%.3f км²", area / 1e6);
-            final String s = String.format(RU, "Открыто: %,d клеток 2×2 м (≈ %s)\nПройдено за всё время: %.1f км", n, a, km);
-            runOnUiThread(() -> { if (!dayMode) stats.setText(s); });
-        });
+    void toast(String s) {
+        Toast.makeText(this, s, Toast.LENGTH_SHORT).show();
     }
 
-    private long dayStart() {
-        Calendar c = (Calendar) day.clone();
-        c.set(Calendar.HOUR_OF_DAY, 0);
-        c.set(Calendar.MINUTE, 0);
-        c.set(Calendar.SECOND, 0);
-        c.set(Calendar.MILLISECOND, 0);
-        return c.getTimeInMillis();
+    void hideKeyboard(View v) {
+        InputMethodManager imm = (InputMethodManager) getSystemService(Context.INPUT_METHOD_SERVICE);
+        if (imm != null) imm.hideSoftInputFromWindow(v.getWindowToken(), 0);
     }
 
-    private boolean isToday() {
-        Calendar now = Calendar.getInstance();
-        return now.get(Calendar.YEAR) == day.get(Calendar.YEAR)
-                && now.get(Calendar.DAY_OF_YEAR) == day.get(Calendar.DAY_OF_YEAR);
+    @Override
+    protected void onNewIntent(Intent intent) {
+        super.onNewIntent(intent);
+        setIntent(intent);
+        if (intent.hasExtra("tab")) show(intent.getIntExtra("tab", 0));
     }
 
-    private String fmtDay() {
-        return new SimpleDateFormat("dd.MM.yyyy", RU).format(day.getTime());
+    @Override
+    protected void onResume() {
+        super.onResume();
+        resumed = true;
+        if (cur >= 0) screens[cur].onShow();
+        handler.post(tick);
+        if (hasFine()) TrackerService.start(this);
     }
 
-    // ---------- Recording ----------
-
-    private void startRec() {
-        if (!hasLocation()) {
-            startAfterPermission = true;
-            requestPerms();
-            return;
-        }
-        prefs.edit().putBoolean("recording", true).apply();
-        Intent i = new Intent(this, TrackerService.class);
-        try {
-            if (Build.VERSION.SDK_INT >= 26) startForegroundService(i); else startService(i);
-        } catch (Exception e) {
-            toast("Не удалось запустить запись");
-        }
-        handler.postDelayed(this::updateRecButton, 400);
-        maybeAskBattery();
+    @Override
+    protected void onPause() {
+        resumed = false;
+        handler.removeCallbacks(tick);
+        if (cur >= 0) screens[cur].onHide();
+        super.onPause();
     }
 
-    private void stopRec() {
-        prefs.edit().putBoolean("recording", false).apply();
-        stopService(new Intent(this, TrackerService.class));
-        handler.postDelayed(this::updateRecButton, 400);
-    }
+    // ---------- permissions: precise location → "always" → battery ----------
 
-    private void updateRecButton() {
-        boolean r = TrackerService.running;
-        bRec.setText(r ? "■ Стоп" : "● Запись");
-        bRec.setBackground(bg(r ? C_REC : C_BTN, 22));
-    }
-
-    private void maybeAskBattery() {
-        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
-        if (pm == null || pm.isIgnoringBatteryOptimizations(getPackageName())) return;
-        if (prefs.getBoolean("battery_asked", false)) return;
-        prefs.edit().putBoolean("battery_asked", true).apply();
-        new AlertDialog.Builder(this)
-                .setTitle("Работа в фоне")
-                .setMessage("Чтобы телефон не останавливал запись маршрута, разреши FogMap работать без ограничений батареи.\n\n"
-                        + "На Xiaomi/Redmi ещё: Настройки → Приложения → FogMap → Контроль активности → Нет ограничений, и включи Автозапуск.")
-                .setPositiveButton("Разрешить", (d, w) -> {
-                    try {
-                        startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
-                                Uri.parse("package:" + getPackageName())));
-                    } catch (Exception ignored) { }
-                })
-                .setNegativeButton("Позже", null)
-                .show();
-    }
-
-    // ---------- Permissions ----------
-
-    private boolean hasLocation() {
+    private boolean hasFine() {
         return checkSelfPermission(Manifest.permission.ACCESS_FINE_LOCATION) == PackageManager.PERMISSION_GRANTED;
     }
 
-    private void requestPerms() {
-        List<String> p = new ArrayList<>();
-        p.add(Manifest.permission.ACCESS_FINE_LOCATION);
-        p.add(Manifest.permission.ACCESS_COARSE_LOCATION);
-        if (Build.VERSION.SDK_INT >= 33) p.add(Manifest.permission.POST_NOTIFICATIONS);
-        requestPermissions(p.toArray(new String[0]), REQ_PERM);
+    private boolean hasBackground() {
+        return Build.VERSION.SDK_INT < 29 || checkSelfPermission(Manifest.permission.ACCESS_BACKGROUND_LOCATION) == PackageManager.PERMISSION_GRANTED;
+    }
+
+    private void ensurePermissions() {
+        SharedPreferences p = S.p(this);
+        if (!hasFine()) {
+            List<String> req = new ArrayList<>();
+            req.add(Manifest.permission.ACCESS_FINE_LOCATION);
+            req.add(Manifest.permission.ACCESS_COARSE_LOCATION);
+            if (Build.VERSION.SDK_INT >= 33) req.add(Manifest.permission.POST_NOTIFICATIONS);
+            requestPermissions(req.toArray(new String[0]), REQ_LOC);
+            return;
+        }
+        TrackerService.start(this);
+        if (!hasBackground() && !p.getBoolean("bg_asked", false)) {
+            p.edit().putBoolean("bg_asked", true).apply();
+            new AlertDialog.Builder(this)
+                    .setTitle("Доступ к геолокации всегда")
+                    .setMessage("Чтобы карта открывалась, даже когда приложение закрыто, на следующем экране выбери «Разрешить в любом режиме» (или «Всегда»).")
+                    .setPositiveButton("Понятно", (d, w) -> requestPermissions(new String[]{Manifest.permission.ACCESS_BACKGROUND_LOCATION}, REQ_BG))
+                    .setCancelable(false)
+                    .show();
+            return;
+        }
+        PowerManager pm = (PowerManager) getSystemService(Context.POWER_SERVICE);
+        if (pm != null && !pm.isIgnoringBatteryOptimizations(getPackageName()) && !p.getBoolean("bat_asked", false)) {
+            p.edit().putBoolean("bat_asked", true).apply();
+            new AlertDialog.Builder(this)
+                    .setTitle("Работа без перерывов")
+                    .setMessage("Разреши FogMap работать без ограничений батареи, иначе телефон может его усыплять.\n\n"
+                            + "На Xiaomi/Redmi ещё: Настройки → Приложения → FogMap → Контроль активности → «Нет ограничений» и включи «Автозапуск».")
+                    .setPositiveButton("Разрешить", (d, w) -> {
+                        try {
+                            startActivity(new Intent(Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS, Uri.parse("package:" + getPackageName())));
+                        } catch (Exception ignored) { }
+                    })
+                    .setNegativeButton("Позже", null)
+                    .show();
+        }
     }
 
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
-        if (hasLocation()) {
-            me.enableMyLocation();
-            if (startAfterPermission) {
-                startAfterPermission = false;
-                startRec();
+        if (requestCode == REQ_LOC && !hasFine()) {
+            new AlertDialog.Builder(this)
+                    .setTitle("Нужна точная геолокация")
+                    .setMessage("Без неё FogMap не сможет открывать карту. Разреши доступ к точному местоположению в настройках приложения.")
+                    .setPositiveButton("Открыть настройки", (d, w) -> {
+                        try {
+                            startActivity(new Intent(Settings.ACTION_APPLICATION_DETAILS_SETTINGS, Uri.parse("package:" + getPackageName())));
+                        } catch (Exception ignored) { }
+                    })
+                    .setNegativeButton("Позже", null)
+                    .show();
+            return;
+        }
+        ensurePermissions();
+        if (cur >= 0) screens[cur].refresh();
+    }
+
+    // ---------- export / import ----------
+
+    void exportData() {
+        toast("Сохраняю…");
+        io.execute(() -> {
+            String name = "fogmap-" + new SimpleDateFormat("yyyy-MM-dd", Ui.RU).format(new Date()) + ".json";
+            String where;
+            try {
+                OutputStream os;
+                if (Build.VERSION.SDK_INT >= 29) {
+                    ContentValues v = new ContentValues();
+                    v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
+                    v.put(MediaStore.MediaColumns.MIME_TYPE, "application/json");
+                    v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
+                    Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
+                    if (uri == null) throw new Exception("no uri");
+                    os = getContentResolver().openOutputStream(uri);
+                    where = "Загрузки/" + name;
+                } else {
+                    File f = new File(getExternalFilesDir(null), name);
+                    os = new FileOutputStream(f);
+                    where = f.getAbsolutePath();
+                }
+                if (os == null) throw new Exception("no stream");
+                writeJson(os);
+                final String w = where;
+                runOnUiThread(() -> toast("Сохранено: " + w));
+            } catch (Exception e) {
+                runOnUiThread(() -> toast("Не удалось сохранить файл"));
             }
-        } else {
-            toast("Нужен доступ к точной геолокации, иначе карта не будет открываться");
+        });
+    }
+
+    private void writeJson(OutputStream os) throws Exception {
+        JsonWriter w = new JsonWriter(new OutputStreamWriter(os, StandardCharsets.UTF_8));
+        Db db = Db.get(this);
+        w.beginObject();
+        w.name("app").value("FogMap");
+        w.name("version").value(1);
+        w.name("points").beginArray();
+        Cursor c = db.allPointsCursor();
+        try {
+            while (c.moveToNext()) {
+                w.beginArray().value(c.getLong(0)).value(c.getDouble(1)).value(c.getDouble(2)).value(c.getDouble(3)).endArray();
+            }
+        } finally {
+            c.close();
+        }
+        w.endArray();
+        w.name("places").beginArray();
+        for (Db.Place p : db.places()) {
+            if (p.status == Db.PENDING) continue;
+            w.beginObject();
+            w.name("lat").value(p.lat).name("lon").value(p.lon).name("status").value(p.status);
+            w.name("name").value(p.name == null ? "" : p.name).name("cat").value(p.cat == null ? "" : p.cat);
+            w.name("visits").value(p.visits).name("t").value(p.t);
+            w.endObject();
+        }
+        w.endArray();
+        w.endObject();
+        w.close();
+    }
+
+    void importData() {
+        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+        i.addCategory(Intent.CATEGORY_OPENABLE);
+        i.setType("*/*");
+        try {
+            startActivityForResult(i, REQ_IMPORT);
+        } catch (Exception e) {
+            toast("Не удалось открыть выбор файла");
         }
     }
 
-    // ---------- Lifecycle ----------
-
     @Override
-    protected void onResume() {
-        super.onResume();
-        map.onResume();
-        if (hasLocation()) {
-            me.enableMyLocation();
-            if (prefs.getBoolean("recording", false) && !TrackerService.running) startRec();
-        }
-        handler.post(tick);
-    }
-
-    @Override
-    protected void onPause() {
-        handler.removeCallbacks(tick);
-        me.disableMyLocation();
-        map.onPause();
-        IGeoPoint c = map.getMapCenter();
-        prefs.edit()
-                .putFloat("lat", (float) c.getLatitude())
-                .putFloat("lon", (float) c.getLongitude())
-                .putFloat("zoom", (float) map.getZoomLevelDouble())
-                .apply();
-        super.onPause();
+    protected void onActivityResult(int requestCode, int resultCode, Intent data) {
+        super.onActivityResult(requestCode, resultCode, data);
+        if (requestCode != REQ_IMPORT || resultCode != RESULT_OK || data == null || data.getData() == null) return;
+        final Uri uri = data.getData();
+        toast("Загружаю историю…");
+        io.execute(() -> {
+            int added = 0;
+            try (InputStream is = getContentResolver().openInputStream(uri)) {
+                JsonReader r = new JsonReader(new InputStreamReader(is, StandardCharsets.UTF_8));
+                Db db = Db.get(this);
+                Tracker tr = new Tracker(this, null, true);
+                r.beginObject();
+                while (r.hasNext()) {
+                    String key = r.nextName();
+                    if ("points".equals(key)) {
+                        r.beginArray();
+                        while (r.hasNext()) {
+                            r.beginArray();
+                            long t = r.nextLong();
+                            double lat = r.nextDouble(), lon = r.nextDouble(), acc = r.nextDouble();
+                            while (r.hasNext()) r.skipValue();
+                            r.endArray();
+                            if (!db.hasPointAt(t)) {
+                                tr.onFix(t, lat, lon, (float) acc, true);
+                                added++;
+                            }
+                        }
+                        r.endArray();
+                    } else if ("places".equals(key)) {
+                        r.beginArray();
+                        while (r.hasNext()) {
+                            double lat = 0, lon = 0;
+                            int status = Db.SAVED, visits = 1;
+                            String name = "", cat = "";
+                            long t = 0;
+                            r.beginObject();
+                            while (r.hasNext()) {
+                                String k = r.nextName();
+                                switch (k) {
+                                    case "lat": lat = r.nextDouble(); break;
+                                    case "lon": lon = r.nextDouble(); break;
+                                    case "status": status = r.nextInt(); break;
+                                    case "name": name = r.nextString(); break;
+                                    case "cat": cat = r.nextString(); break;
+                                    case "visits": visits = r.nextInt(); break;
+                                    case "t": t = r.nextLong(); break;
+                                    default: r.skipValue();
+                                }
+                            }
+                            r.endObject();
+                            if (db.placeNear(lat, lon, 30) == null) db.insertPlace(lat, lon, status, name, cat, visits, t, 0);
+                        }
+                        r.endArray();
+                    } else {
+                        r.skipValue();
+                    }
+                }
+                r.endObject();
+                final int n = added;
+                runOnUiThread(() -> {
+                    toast("Готово: добавлено точек " + n);
+                    if (cur >= 0) screens[cur].refresh();
+                });
+            } catch (Exception e) {
+                runOnUiThread(() -> toast("Это не файл FogMap или он повреждён"));
+            }
+        });
     }
 }

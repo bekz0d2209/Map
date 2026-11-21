@@ -10,8 +10,23 @@ android {
         applicationId 'uz.bekzod.fogmap'
         minSdk 24
         targetSdk 34
-        versionCode 1
-        versionName '1.0'
+        versionCode 2
+        versionName '1.3'
+    }
+
+    signingConfigs {
+        fixed {
+            storeFile file('fogmap.jks')
+            storePassword 'fogmap123'
+            keyAlias 'fogmap'
+            keyPassword 'fogmap123'
+        }
+    }
+
+    buildTypes {
+        debug {
+            signingConfig signingConfigs.fixed
+        }
     }
 
     compileOptions {
