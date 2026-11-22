@@ -1,11 +1,13 @@
 package uz.bekzod.fogmap;
 
 import android.content.Context;
+import android.graphics.Bitmap;
 import android.graphics.Canvas;
 import android.graphics.Paint;
 import android.graphics.Path;
 import android.graphics.Point;
 import android.graphics.RectF;
+import android.view.MotionEvent;
 
 import org.osmdroid.util.GeoPoint;
 import org.osmdroid.views.MapView;
@@ -28,6 +30,12 @@ public class MarksOverlay extends Overlay {
     public volatile List<Db.Place> places = new ArrayList<>();
     public volatile double[] me;
     public volatile double[] start, end;
+    public volatile List<Db.Photo> photos = new ArrayList<>();
+    public PhotoTap onPhoto;
+
+    public interface PhotoTap {
+        void onPhoto(Db.Photo p);
+    }
 
     public MarksOverlay(Context ctx) {
         super();
@@ -59,6 +67,23 @@ public class MarksOverlay extends Overlay {
             boolean pending = pl.status == Db.PENDING;
             label(c, pt.x, pt.y, pending ? "?" : pl.name, pending);
         }
+        float ps = 44 * d;
+        for (Db.Photo ph : photos) {
+            Bitmap b = PhotoStore.thumbBitmap(ctx, ph.file);
+            if (b == null) continue;
+            Point pt = p.toPixels(new GeoPoint(ph.lat, ph.lon), null);
+            rect.set(pt.x - ps / 2, pt.y - ps - 6 * d, pt.x + ps / 2, pt.y - 6 * d);
+            fill.setColor(Ui.WHITE);
+            RectF border = new RectF(rect.left - 3 * d, rect.top - 3 * d, rect.right + 3 * d, rect.bottom + 3 * d);
+            c.drawRoundRect(border, 10 * d, 10 * d, fill);
+            c.drawBitmap(b, null, rect, null);
+            tri.reset();
+            tri.moveTo(pt.x - 6 * d, rect.bottom + 2 * d);
+            tri.lineTo(pt.x + 6 * d, rect.bottom + 2 * d);
+            tri.lineTo(pt.x, pt.y);
+            tri.close();
+            c.drawPath(tri, fill);
+        }
         if (start != null) dot(c, p, start, Ui.OK);
         if (end != null) dot(c, p, end, Ui.ACC);
         double[] m = me;
@@ -73,6 +98,21 @@ public class MarksOverlay extends Overlay {
             stroke.setStrokeWidth(3 * d);
             c.drawCircle(pt.x, pt.y, 8 * d, stroke);
         }
+    }
+
+    @Override
+    public boolean onSingleTapConfirmed(MotionEvent e, MapView map) {
+        if (onPhoto == null) return false;
+        Projection p = map.getProjection();
+        float ps = 44 * d;
+        for (Db.Photo ph : photos) {
+            Point pt = p.toPixels(new GeoPoint(ph.lat, ph.lon), null);
+            if (Math.abs(e.getX() - pt.x) < ps / 2 + 6 * d && e.getY() < pt.y && e.getY() > pt.y - ps - 12 * d) {
+                onPhoto.onPhoto(ph);
+                return true;
+            }
+        }
+        return false;
     }
 
     private void dot(Canvas c, Projection p, double[] ll, int color) {

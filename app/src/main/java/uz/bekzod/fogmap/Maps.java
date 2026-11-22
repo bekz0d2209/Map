@@ -71,9 +71,12 @@ public final class Maps {
     /** Switches the map to the chosen look (scheme / satellite / hybrid). Safe to call often. */
     public static void apply(MapView m, Context c) {
         int t = type(c);
+        boolean offline = S.offline(c);
+        int state = t * 2 + (offline ? 1 : 0);
         Integer cur = applied.get(m);
-        if (cur != null && cur == t) return;
-        applied.put(m, t);
+        if (cur != null && cur == state) return;
+        applied.put(m, state);
+        m.setUseDataConnection(!offline);
 
         List<Overlay> old = new ArrayList<>();
         for (Overlay o : m.getOverlays()) if (o instanceof TilesOverlay) old.add(o);
@@ -94,7 +97,9 @@ public final class Maps {
     }
 
     private static TilesOverlay labels(Context c, ITileSource src) {
-        TilesOverlay o = new TilesOverlay(new MapTileProviderBasic(c.getApplicationContext(), src), c.getApplicationContext());
+        MapTileProviderBasic provider = new MapTileProviderBasic(c.getApplicationContext(), src);
+        provider.setUseDataConnection(!S.offline(c));
+        TilesOverlay o = new TilesOverlay(provider, c.getApplicationContext());
         o.setLoadingBackgroundColor(Color.TRANSPARENT);
         o.setLoadingLineColor(Color.TRANSPARENT);
         return o;

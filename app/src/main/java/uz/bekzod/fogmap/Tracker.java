@@ -13,6 +13,9 @@ import java.util.HashSet;
 public class Tracker {
     public interface Listener {
         void onNewPlace(long placeId, int minutes);
+
+        /** A real (non-jitter) point was recorded. */
+        default void onKeptPoint(double lat, double lon, long t) { }
     }
 
     private static final float MAX_ACC_TRACK = 30f;
@@ -120,10 +123,14 @@ public class Tracker {
         }
         long dtSec = Math.max(1, (t - lastT) / 1000);
         // Continuous if the jump is physically possible (walking, car, train: up to 250 km/h).
-        boolean cont = same && dtSec <= 180 && d / dtSec <= 70.0;
+        // Imported history (e.g. Google Timeline) has points minutes apart, so allow longer gaps there.
+        boolean cont = importing
+                ? same && dtSec <= 1800 && d <= 3000 && d / dtSec <= 70.0
+                : same && dtSec <= 180 && d / dtSec <= 70.0;
         db.insertPoint(t, lat, lon, acc, day);
         lastMove = t;
         lastPos = new double[]{lat, lon};
+        if (listener != null) listener.onKeptPoint(lat, lon, t);
         if (cont) {
             long moving = d / dtSec > 0.4 ? dtSec : 0;
             db.addDayStat(day, d, moving, t);
@@ -140,6 +147,13 @@ public class Tracker {
         lastLat = lat;
         lastLon = lon;
         lastT = t;
+    }
+
+    /** Clears the fog around a spot without adding it to a route (used for photos). */
+    public void reveal(double lat, double lon, long t) {
+        stampX = Double.NaN;
+        stamp(lat, lon, t, Geo.day(t));
+        stampX = Double.NaN;
     }
 
     private void stamp(double lat, double lon, long t, int day) {

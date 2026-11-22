@@ -82,14 +82,22 @@ public class SettingsScreen implements Screen {
         gpsBox.addView(hint("Когда стоишь на месте, GPS сам засыпает и просыпается, как только пойдёшь или поедешь. «Экономия» дополнительно реже обновляет GPS в движении."));
         col.addView(gpsBox);
 
+        col.addView(Ui.section(a, "Интернет"));
+        LinearLayout netBox = box();
+        netBox.addView(toggle("Карта без интернета", "Приложение совсем не выходит в сеть: видны только уже загруженные куски карты, города в паспорт не добавляются",
+                S.offline(a), on -> S.putBool(a, "offline", on)));
+        col.addView(netBox);
+
         col.addView(Ui.section(a, "Данные"));
         LinearLayout dataBox = box();
-        dataBox.addView(action("Экспорт истории в файл", v -> a.exportData()));
+        dataBox.addView(action("Экспорт: копия FogMap или GPX", v -> a.exportData()));
         dataBox.addView(divider());
-        dataBox.addView(action("Импорт из файла", v -> a.importData()));
+        dataBox.addView(action("Импорт: копия FogMap, история Google, GPX", v -> a.importData()));
         col.addView(dataBox);
 
-        TextView ver = Ui.tv(a, "FogMap 1.7 · данные хранятся только на телефоне", 12, Ui.MUTE, null);
+
+
+        TextView ver = Ui.tv(a, "FogMap 1.8 · данные хранятся только на телефоне", 12, Ui.MUTE, null);
         ver.setGravity(Gravity.CENTER);
         ver.setPadding(0, Ui.dp(a, 16), 0, 0);
         col.addView(ver, Ui.lp(-1, -2));
@@ -105,6 +113,29 @@ public class SettingsScreen implements Screen {
         if (l != null) r.setOnClickListener(l);
         box.addView(r);
         return v;
+    }
+
+    interface BoolCb {
+        void on(boolean v);
+    }
+
+    private View toggle(String label, String sub, boolean on, BoolCb cb) {
+        LinearLayout r = Ui.row(a);
+        r.setPadding(0, Ui.dp(a, 12), 0, Ui.dp(a, 12));
+        LinearLayout t = Ui.col(a);
+        t.addView(Ui.tv(a, label, 15, Ui.INK, null));
+        TextView s = Ui.tv(a, sub, 12, Ui.MUTE, null);
+        s.setPadding(0, Ui.dp(a, 2), Ui.dp(a, 10), 0);
+        t.addView(s);
+        r.addView(t, Ui.weight(1));
+        android.widget.Switch sw = new android.widget.Switch(a);
+        sw.setChecked(on);
+        sw.setThumbTintList(ColorStateList.valueOf(Ui.WHITE));
+        sw.setTrackTintList(new ColorStateList(new int[][]{{android.R.attr.state_checked}, {}}, new int[]{Ui.OK, Ui.LINE}));
+        sw.setOnCheckedChangeListener((b, v) -> cb.on(v));
+        r.addView(sw);
+        r.setOnClickListener(v -> sw.toggle());
+        return r;
     }
 
     private void setStatus(TextView v, boolean ok) {
@@ -227,5 +258,6 @@ public class SettingsScreen implements Screen {
             stLast.setText((m < 1 ? "Только что" : Ui.dur(m * 60) + " назад") + " · служба " + svc);
         }
         stLast.setTextColor(TrackerService.running ? Ui.OK : Ui.ACC);
+
     }
 }

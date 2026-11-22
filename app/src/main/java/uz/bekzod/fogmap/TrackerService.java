@@ -43,6 +43,7 @@ public class TrackerService extends Service implements LocationListener {
     public static volatile boolean running = false;
     static final String CH_SERVICE = "service";
     static final String CH_PLACES = "places";
+    static final String CH_NEWS = "news";
     private static final long STILL_AFTER_MS = 120000L;
 
     private LocationManager lm;
@@ -135,7 +136,24 @@ public class TrackerService extends Service implements LocationListener {
             return;
         }
         running = true;
-        tracker = new Tracker(this, this::notifyPlace, false);
+        tracker = new Tracker(this, new Tracker.Listener() {
+            private int kept = 0;
+
+            @Override
+            public void onNewPlace(long placeId, int minutes) {
+                notifyPlace(placeId, minutes);
+            }
+
+            @Override
+            public void onKeptPoint(double lat, double lon, long t) {
+                try {
+                    Passport.notify(TrackerService.this, Passport.check(TrackerService.this, lat, lon, t));
+                    if (++kept % 40 == 0) checkLevel();
+                } catch (Exception e) {
+                    App.log("onKeptPoint", e);
+                }
+            }
+        }, false);
         lm = (LocationManager) getSystemService(LOCATION_SERVICE);
         sm = (SensorManager) getSystemService(SENSOR_SERVICE);
         if (sm != null) {
@@ -164,6 +182,7 @@ public class TrackerService extends Service implements LocationListener {
         s.setShowBadge(false);
         nm.createNotificationChannel(s);
         nm.createNotificationChannel(new NotificationChannel(CH_PLACES, "Где это мы?", NotificationManager.IMPORTANCE_HIGH));
+        nm.createNotificationChannel(new NotificationChannel(CH_NEWS, "Новые города и уровни", NotificationManager.IMPORTANCE_DEFAULT));
     }
 
     // ---------- smart battery mode ----------
@@ -237,6 +256,28 @@ public class TrackerService extends Service implements LocationListener {
     }
 
     // ---------- notifications ----------
+
+    private void checkLevel() {
+        int lvl = Levels.level(Db.get(this).totalCells() * 16.0);
+        SharedPreferences p = S.p(this);
+        int old = p.getInt("level", -1);
+        p.edit().putInt("level", lvl).apply();
+        if (old < 0 || lvl <= old) return;
+        try {
+            Intent i = new Intent(this, MainActivity.class).putExtra("tab", 3).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK);
+            PendingIntent pi = PendingIntent.getActivity(this, 4, i, PendingIntent.FLAG_IMMUTABLE | PendingIntent.FLAG_UPDATE_CURRENT);
+            Notification.Builder nb = Build.VERSION.SDK_INT >= 26 ? new Notification.Builder(this, CH_NEWS) : new Notification.Builder(this);
+            Notification n = nb.setContentTitle("Новый уровень " + lvl + ": " + Levels.NAMES[lvl])
+                    .setContentText("Ты открыл больше, чем " + Levels.NAMES[lvl])
+                    .setSmallIcon(R.drawable.ic_pin)
+                    .setContentIntent(pi)
+                    .setAutoCancel(true)
+                    .build();
+            getSystemService(NotificationManager.class).notify(4000 + lvl, n);
+        } catch (Exception e) {
+            App.log("checkLevel", e);
+        }
+    }
 
     private void notifyPlace(long id, int minutes) {
         try {

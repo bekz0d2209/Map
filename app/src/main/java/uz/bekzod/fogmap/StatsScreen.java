@@ -21,6 +21,9 @@ public class StatsScreen implements Screen {
     private final TextView big, sub;
     private final View cKm, cDays, cBest, cPlaces;
     private final BarsView bars;
+    private final TextView lvlName, lvlNext;
+    private final View lvlBar;
+    private final LinearLayout passport;
 
     public StatsScreen(MainActivity a) {
         this.a = a;
@@ -47,6 +50,26 @@ public class StatsScreen implements Screen {
         hl.topMargin = Ui.dp(a, 8);
         col.addView(hero, hl);
 
+        LinearLayout lvl = Ui.col(a);
+        lvl.setBackground(Ui.bg(a, Ui.SURF, 18));
+        lvl.setPadding(Ui.dp(a, 16), Ui.dp(a, 14), Ui.dp(a, 16), Ui.dp(a, 14));
+        lvlName = Ui.tv(a, "", 17, Ui.INK, Ui.MED);
+        lvl.addView(lvlName);
+        android.widget.FrameLayout track = new android.widget.FrameLayout(a);
+        track.setBackground(Ui.bg(a, Ui.LINE, 4));
+        lvlBar = new View(a);
+        lvlBar.setBackground(Ui.bg(a, Ui.ACC, 4));
+        track.addView(lvlBar, new android.widget.FrameLayout.LayoutParams(0, -1));
+        LinearLayout.LayoutParams tl = Ui.lp(-1, Ui.dp(a, 8));
+        tl.topMargin = Ui.dp(a, 10);
+        tl.bottomMargin = Ui.dp(a, 8);
+        lvl.addView(track, tl);
+        lvlNext = Ui.tv(a, "", 13, Ui.MUTE, null);
+        lvl.addView(lvlNext);
+        LinearLayout.LayoutParams ll = Ui.lp(-1, -2);
+        ll.topMargin = Ui.dp(a, 8);
+        col.addView(lvl, ll);
+
         cKm = Ui.card(a, "Пройдено всего");
         cDays = Ui.card(a, "Активных дней");
         cBest = Ui.card(a, "Лучший день");
@@ -58,6 +81,51 @@ public class StatsScreen implements Screen {
         bars = new BarsView(a);
         bars.setBackground(Ui.bg(a, Ui.SURF, 18));
         col.addView(bars, Ui.lp(-1, Ui.dp(a, 170)));
+
+        col.addView(Ui.section(a, "Паспорт: где ты побывал"));
+        passport = Ui.col(a);
+        col.addView(passport, Ui.lp(-1, -2));
+    }
+
+    private void fillPassport(List<Db.Visit> countries, List<Db.Visit> regions, List<Db.Visit> cities) {
+        passport.removeAllViews();
+        if (countries.isEmpty() && regions.isEmpty() && cities.isEmpty()) {
+            TextView t = Ui.tv(a, "Пока пусто. Когда приложение узнает, в каком ты городе, он появится здесь с датой первого визита. Нужен интернет.", 14, Ui.MUTE, null);
+            t.setBackground(Ui.bg(a, Ui.SURF, 16));
+            t.setPadding(Ui.dp(a, 14), Ui.dp(a, 14), Ui.dp(a, 14), Ui.dp(a, 14));
+            passport.addView(t);
+            return;
+        }
+        passport.addView(Ui.pair(a, count("Стран", countries.size()), count("Регионов", regions.size())));
+        View cc = count("Городов", cities.size());
+        View empty = new View(a);
+        passport.addView(Ui.pair(a, cc, empty));
+        group("Города", cities);
+        group("Регионы", regions);
+        group("Страны", countries);
+    }
+
+    private View count(String label, int n) {
+        View c = Ui.card(a, label);
+        Ui.setCard(c, String.valueOf(n));
+        return c;
+    }
+
+    private void group(String title, List<Db.Visit> list) {
+        if (list.isEmpty()) return;
+        passport.addView(Ui.section(a, title));
+        int shown = 0;
+        for (Db.Visit v : list) {
+            if (++shown > 40) break;
+            LinearLayout r = Ui.row(a);
+            r.setBackground(Ui.bg(a, Ui.SURF, 14));
+            r.setPadding(Ui.dp(a, 14), Ui.dp(a, 11), Ui.dp(a, 14), Ui.dp(a, 11));
+            r.addView(Ui.tv(a, v.name, 15, Ui.INK, null), Ui.weight(1));
+            r.addView(Ui.tv(a, "с " + Ui.dayShort(Geo.day(v.first)) + "." + Geo.day(v.first) / 10000, 13, Ui.MUTE, null));
+            LinearLayout.LayoutParams lp = Ui.lp(-1, -2);
+            lp.bottomMargin = Ui.dp(a, 6);
+            passport.addView(r, lp);
+        }
     }
 
     @Override
@@ -99,6 +167,7 @@ public class StatsScreen implements Screen {
                 labels[i] = Ui.WD[Geo.cal(d).get(java.util.Calendar.DAY_OF_WEEK)];
             }
             boolean hasHome = db.home() != null;
+            List<Db.Visit> countries = db.visits(Passport.COUNTRY), regions = db.visits(Passport.REGION), cities = db.visits(Passport.CITY);
             final double fTotal = total, fBest = best;
             final int fBestDay = bestDay, fActive = active, fSaved = saved;
             a.runOnUiThread(() -> {
@@ -112,6 +181,20 @@ public class StatsScreen implements Screen {
                 Ui.setCard(cBest, fBestDay > 0 ? Ui.km(fBest) + " · " + Ui.dayShort(fBestDay) : "—");
                 Ui.setCard(cPlaces, String.valueOf(fSaved));
                 bars.set(km, labels);
+                int lv = Levels.level(area);
+                lvlName.setText("Уровень " + lv + " · " + Levels.NAMES[lv]);
+                float pr = Levels.progress(area);
+                View track = (View) lvlBar.getParent();
+                android.widget.FrameLayout.LayoutParams bp = (android.widget.FrameLayout.LayoutParams) lvlBar.getLayoutParams();
+                bp.width = Math.max(Ui.dp(a, 4), Math.round(track.getWidth() * pr));
+                lvlBar.setLayoutParams(bp);
+                if (track.getWidth() == 0) track.post(() -> {
+                    bp.width = Math.max(Ui.dp(a, 4), Math.round(track.getWidth() * pr));
+                    lvlBar.setLayoutParams(bp);
+                });
+                lvlNext.setText(lv >= Levels.NAMES.length - 1 ? "Максимальный уровень!"
+                        : "До уровня «" + Levels.NAMES[lv + 1] + "» осталось " + Ui.area(Levels.AREA[lv + 1] - area));
+                fillPassport(countries, regions, cities);
             });
         });
     }

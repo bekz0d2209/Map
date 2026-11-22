@@ -10,6 +10,7 @@ import android.content.Context;
 import android.content.Intent;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
+import android.location.LocationManager;
 import android.database.Cursor;
 import android.net.Uri;
 import android.os.Build;
@@ -48,7 +49,7 @@ import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 public class MainActivity extends Activity {
-    private static final int REQ_LOC = 1, REQ_BG = 2, REQ_IMPORT = 3;
+    private static final int REQ_LOC = 1, REQ_BG = 2, REQ_IMPORT = 3, REQ_CAMERA = 4, REQ_GALLERY = 5, REQ_MEDIA_LOC = 6;
     private static final String[] NAMES = {"Карта", "Дни", "Места", "Статистика", "Настройки"};
     private static final int[] ICONS = {R.drawable.ic_map, R.drawable.ic_days, R.drawable.ic_pin, R.drawable.ic_stats, R.drawable.ic_set};
 
@@ -77,6 +78,8 @@ public class MainActivity extends Activity {
     @Override
     protected void onCreate(Bundle savedInstanceState) {
         super.onCreate(savedInstanceState);
+        if (savedInstanceState != null && savedInstanceState.getString("cameraUri") != null)
+            cameraUri = Uri.parse(savedInstanceState.getString("cameraUri"));
         getWindow().setStatusBarColor(Ui.BG);
         getWindow().setNavigationBarColor(Ui.SURF);
 
@@ -223,6 +226,12 @@ public class MainActivity extends Activity {
     }
 
     @Override
+    protected void onSaveInstanceState(Bundle out) {
+        super.onSaveInstanceState(out);
+        if (cameraUri != null) out.putString("cameraUri", cameraUri.toString());
+    }
+
+    @Override
     protected void onNewIntent(Intent intent) {
         super.onNewIntent(intent);
         setIntent(intent);
@@ -301,6 +310,10 @@ public class MainActivity extends Activity {
     @Override
     public void onRequestPermissionsResult(int requestCode, String[] permissions, int[] results) {
         super.onRequestPermissionsResult(requestCode, permissions, results);
+        if (requestCode == REQ_MEDIA_LOC) {
+            pickPhoto();
+            return;
+        }
         if (requestCode == REQ_LOC && !hasFine()) {
             new AlertDialog.Builder(this)
                     .setTitle("Нужна точная геолокация")
@@ -321,16 +334,23 @@ public class MainActivity extends Activity {
     // ---------- export / import ----------
 
     void exportData() {
+        new AlertDialog.Builder(this)
+                .setTitle("Экспорт")
+                .setItems(new String[]{"Резервная копия FogMap (.json)", "Трек для других приложений (.gpx)"}, (d, w) -> exportTo(w == 1))
+                .show();
+    }
+
+    private void exportTo(boolean gpx) {
         toast("Сохраняю…");
         io.execute(() -> {
-            String name = "fogmap-" + new SimpleDateFormat("yyyy-MM-dd", Ui.RU).format(new Date()) + ".json";
-            String where;
+            String name = "fogmap-" + new SimpleDateFormat("yyyy-MM-dd", Ui.RU).format(new Date()) + (gpx ? ".gpx" : ".json");
             try {
                 OutputStream os;
+                String where;
                 if (Build.VERSION.SDK_INT >= 29) {
                     ContentValues v = new ContentValues();
                     v.put(MediaStore.MediaColumns.DISPLAY_NAME, name);
-                    v.put(MediaStore.MediaColumns.MIME_TYPE, "application/json");
+                    v.put(MediaStore.MediaColumns.MIME_TYPE, gpx ? "application/gpx+xml" : "application/json");
                     v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_DOWNLOADS);
                     Uri uri = getContentResolver().insert(MediaStore.Downloads.EXTERNAL_CONTENT_URI, v);
                     if (uri == null) throw new Exception("no uri");
@@ -342,123 +362,175 @@ public class MainActivity extends Activity {
                     where = f.getAbsolutePath();
                 }
                 if (os == null) throw new Exception("no stream");
-                writeJson(os);
+                if (gpx) Backup.writeGpx(this, os); else Backup.writeJson(this, os);
                 final String w = where;
                 runOnUiThread(() -> toast("Сохранено: " + w));
             } catch (Exception e) {
+                App.log("export", e);
                 runOnUiThread(() -> toast("Не удалось сохранить файл"));
             }
         });
     }
 
-    private void writeJson(OutputStream os) throws Exception {
-        JsonWriter w = new JsonWriter(new OutputStreamWriter(os, StandardCharsets.UTF_8));
-        Db db = Db.get(this);
-        w.beginObject();
-        w.name("app").value("FogMap");
-        w.name("version").value(1);
-        w.name("points").beginArray();
-        Cursor c = db.allPointsCursor();
-        try {
-            while (c.moveToNext()) {
-                w.beginArray().value(c.getLong(0)).value(c.getDouble(1)).value(c.getDouble(2)).value(c.getDouble(3)).endArray();
-            }
-        } finally {
-            c.close();
-        }
-        w.endArray();
-        w.name("places").beginArray();
-        for (Db.Place p : db.places()) {
-            if (p.status == Db.PENDING) continue;
-            w.beginObject();
-            w.name("lat").value(p.lat).name("lon").value(p.lon).name("status").value(p.status);
-            w.name("name").value(p.name == null ? "" : p.name).name("cat").value(p.cat == null ? "" : p.cat);
-            w.name("visits").value(p.visits).name("t").value(p.t);
-            w.endObject();
-        }
-        w.endArray();
-        w.endObject();
-        w.close();
+    void importData() {
+        new AlertDialog.Builder(this)
+                .setTitle("Импорт истории")
+                .setMessage("Подходят файлы:\n\n• резервная копия FogMap (.json)\n• история Google Карт: Timeline.json или Records.json "
+                        + "(Google Карты → Настройки → Хронология → Экспорт, или takeout.google.com)\n• треки .gpx из любых приложений\n\n"
+                        + "Туман откроется по всем местам из файла, а города попадут в паспорт.")
+                .setPositiveButton("Выбрать файл", (d, w) -> {
+                    Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
+                    i.addCategory(Intent.CATEGORY_OPENABLE);
+                    i.setType("*/*");
+                    try {
+                        startActivityForResult(i, REQ_IMPORT);
+                    } catch (Exception e) {
+                        toast("Не удалось открыть выбор файла");
+                    }
+                })
+                .setNegativeButton("Отмена", null)
+                .show();
     }
 
-    void importData() {
-        Intent i = new Intent(Intent.ACTION_OPEN_DOCUMENT);
-        i.addCategory(Intent.CATEGORY_OPENABLE);
-        i.setType("*/*");
+    private void runImport(Uri uri) {
+        final AlertDialog dlg = new AlertDialog.Builder(this)
+                .setTitle("Импорт")
+                .setMessage("Читаю файл…")
+                .setCancelable(false)
+                .show();
+        io.execute(() -> {
+            String result;
+            try (InputStream is = getContentResolver().openInputStream(uri)) {
+                if (is == null) throw new Exception("no stream");
+                result = new Importer(this, text -> runOnUiThread(() -> dlg.setMessage(text))).run(is);
+            } catch (Exception e) {
+                App.log("import", e);
+                result = "Не получилось прочитать файл. Это точно история FogMap, Google или GPX?";
+            }
+            final String r = result;
+            runOnUiThread(() -> {
+                try { dlg.dismiss(); } catch (Exception ignored) { }
+                new AlertDialog.Builder(this).setMessage(r).setPositiveButton("ОК", null).show();
+                if (cur >= 0) screens[cur].refresh();
+            });
+        });
+    }
+
+    // ---------- photos ----------
+
+    private Uri cameraUri;
+
+    void takePhoto() {
         try {
-            startActivityForResult(i, REQ_IMPORT);
+            Intent i = new Intent(MediaStore.ACTION_IMAGE_CAPTURE);
+            cameraUri = null;
+            if (Build.VERSION.SDK_INT >= 29) {
+                ContentValues v = new ContentValues();
+                v.put(MediaStore.MediaColumns.DISPLAY_NAME, "fogmap-" + System.currentTimeMillis() + ".jpg");
+                v.put(MediaStore.MediaColumns.MIME_TYPE, "image/jpeg");
+                v.put(MediaStore.MediaColumns.RELATIVE_PATH, Environment.DIRECTORY_PICTURES + "/FogMap");
+                cameraUri = getContentResolver().insert(MediaStore.Images.Media.EXTERNAL_CONTENT_URI, v);
+                if (cameraUri != null) i.putExtra(MediaStore.EXTRA_OUTPUT, cameraUri);
+            }
+            startActivityForResult(i, REQ_CAMERA);
         } catch (Exception e) {
-            toast("Не удалось открыть выбор файла");
+            App.log("takePhoto", e);
+            toast("Не удалось открыть камеру");
         }
+    }
+
+    void pickPhoto() {
+        if (Build.VERSION.SDK_INT >= 29 && checkSelfPermission(Manifest.permission.ACCESS_MEDIA_LOCATION) != PackageManager.PERMISSION_GRANTED
+                && !S.p(this).getBoolean("media_loc_asked", false)) {
+            S.p(this).edit().putBoolean("media_loc_asked", true).apply();
+            requestPermissions(new String[]{Manifest.permission.ACCESS_MEDIA_LOCATION}, REQ_MEDIA_LOC);
+            return;
+        }
+        try {
+            startActivityForResult(new Intent(Intent.ACTION_PICK, MediaStore.Images.Media.EXTERNAL_CONTENT_URI), REQ_GALLERY);
+        } catch (Exception e) {
+            Intent i = new Intent(Intent.ACTION_GET_CONTENT).setType("image/*");
+            try { startActivityForResult(i, REQ_GALLERY); } catch (Exception e2) { toast("Не удалось открыть галерею"); }
+        }
+    }
+
+    /** Newest known position of the phone, or null. */
+    double[] currentLocation() {
+        double[] best = null;
+        long bestT = 0;
+        if (Perms.fine(this)) {
+            LocationManager lm = (LocationManager) getSystemService(LOCATION_SERVICE);
+            List<String> providers = new ArrayList<>();
+            providers.add(LocationManager.GPS_PROVIDER);
+            providers.add(LocationManager.NETWORK_PROVIDER);
+            if (Build.VERSION.SDK_INT >= 31) providers.add(LocationManager.FUSED_PROVIDER);
+            for (String pr : providers) {
+                try {
+                    android.location.Location l = lm.getLastKnownLocation(pr);
+                    if (l != null && l.getTime() > bestT) {
+                        bestT = l.getTime();
+                        best = new double[]{l.getLatitude(), l.getLongitude()};
+                    }
+                } catch (Exception ignored) { }
+            }
+        }
+        if (best == null) {
+            double[] lp = Db.get(this).lastPoint();
+            if (lp != null) best = new double[]{lp[0], lp[1]};
+        }
+        return best;
+    }
+
+    private void addPhoto(Uri uri, android.graphics.Bitmap thumb, boolean fromCamera) {
+        toast("Добавляю фото…");
+        io.execute(() -> {
+            double[] ll = fromCamera ? currentLocation() : PhotoStore.exifLocation(this, uri);
+            if (ll == null && !fromCamera) {
+                runOnUiThread(() -> new AlertDialog.Builder(this)
+                        .setMessage("В этом фото не записано место. Поставить его туда, где ты сейчас?")
+                        .setPositiveButton("Да", (d, w) -> io.execute(() -> finishPhoto(uri, thumb, currentLocation())))
+                        .setNegativeButton("Отмена", null)
+                        .show());
+                return;
+            }
+            finishPhoto(uri, thumb, ll);
+        });
+    }
+
+    private void finishPhoto(Uri uri, android.graphics.Bitmap thumb, double[] ll) {
+        if (ll == null) {
+            runOnUiThread(() -> toast("Не знаю, где ты сейчас. Включи GPS и попробуй снова"));
+            return;
+        }
+        String name = PhotoStore.save(this, uri, thumb);
+        if (name == null) {
+            runOnUiThread(() -> toast("Не удалось сохранить фото"));
+            return;
+        }
+        long t = System.currentTimeMillis();
+        Db.get(this).insertPhoto(ll[0], ll[1], t, name);
+        new Tracker(this, null, true).reveal(ll[0], ll[1], t);
+        runOnUiThread(() -> {
+            toast("Фото на карте");
+            showMapAt(ll[0], ll[1]);
+        });
     }
 
     @Override
     protected void onActivityResult(int requestCode, int resultCode, Intent data) {
         super.onActivityResult(requestCode, resultCode, data);
-        if (requestCode != REQ_IMPORT || resultCode != RESULT_OK || data == null || data.getData() == null) return;
-        final Uri uri = data.getData();
-        toast("Загружаю историю…");
-        io.execute(() -> {
-            int added = 0;
-            try (InputStream is = getContentResolver().openInputStream(uri)) {
-                JsonReader r = new JsonReader(new InputStreamReader(is, StandardCharsets.UTF_8));
-                Db db = Db.get(this);
-                Tracker tr = new Tracker(this, null, true);
-                r.beginObject();
-                while (r.hasNext()) {
-                    String key = r.nextName();
-                    if ("points".equals(key)) {
-                        r.beginArray();
-                        while (r.hasNext()) {
-                            r.beginArray();
-                            long t = r.nextLong();
-                            double lat = r.nextDouble(), lon = r.nextDouble(), acc = r.nextDouble();
-                            while (r.hasNext()) r.skipValue();
-                            r.endArray();
-                            if (!db.hasPointAt(t)) {
-                                tr.onFix(t, lat, lon, (float) acc, true);
-                                added++;
-                            }
-                        }
-                        r.endArray();
-                    } else if ("places".equals(key)) {
-                        r.beginArray();
-                        while (r.hasNext()) {
-                            double lat = 0, lon = 0;
-                            int status = Db.SAVED, visits = 1;
-                            String name = "", cat = "";
-                            long t = 0;
-                            r.beginObject();
-                            while (r.hasNext()) {
-                                String k = r.nextName();
-                                switch (k) {
-                                    case "lat": lat = r.nextDouble(); break;
-                                    case "lon": lon = r.nextDouble(); break;
-                                    case "status": status = r.nextInt(); break;
-                                    case "name": name = r.nextString(); break;
-                                    case "cat": cat = r.nextString(); break;
-                                    case "visits": visits = r.nextInt(); break;
-                                    case "t": t = r.nextLong(); break;
-                                    default: r.skipValue();
-                                }
-                            }
-                            r.endObject();
-                            if (db.placeNear(lat, lon, 30) == null) db.insertPlace(lat, lon, status, name, cat, visits, t, 0);
-                        }
-                        r.endArray();
-                    } else {
-                        r.skipValue();
-                    }
-                }
-                r.endObject();
-                final int n = added;
-                runOnUiThread(() -> {
-                    toast("Готово: добавлено точек " + n);
-                    if (cur >= 0) screens[cur].refresh();
-                });
-            } catch (Exception e) {
-                runOnUiThread(() -> toast("Это не файл FogMap или он повреждён"));
+        if (resultCode != RESULT_OK) {
+            if (requestCode == REQ_CAMERA && cameraUri != null) {
+                try { getContentResolver().delete(cameraUri, null, null); } catch (Exception ignored) { }
             }
-        });
+            return;
+        }
+        if (requestCode == REQ_IMPORT && data != null && data.getData() != null) runImport(data.getData());
+        else if (requestCode == REQ_GALLERY && data != null && data.getData() != null) addPhoto(data.getData(), null, false);
+        else if (requestCode == REQ_CAMERA) {
+            if (cameraUri != null) addPhoto(cameraUri, null, true);
+            else if (data != null && data.getExtras() != null && data.getExtras().get("data") instanceof android.graphics.Bitmap)
+                addPhoto(null, (android.graphics.Bitmap) data.getExtras().get("data"), true);
+        }
     }
 }

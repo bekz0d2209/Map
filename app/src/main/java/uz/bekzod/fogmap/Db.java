@@ -37,7 +37,7 @@ public class Db extends SQLiteOpenHelper {
     }
 
     private Db(Context c) {
-        super(c, "fogmap2.db", null, 1);
+        super(c, "fogmap2.db", null, 2);
         setWriteAheadLoggingEnabled(true);
     }
 
@@ -53,10 +53,112 @@ public class Db extends SQLiteOpenHelper {
         db.execSQL("CREATE INDEX idx_cells_day ON cells(day)");
         db.execSQL("CREATE TABLE day_stats (day INTEGER PRIMARY KEY, meters REAL NOT NULL, moving INTEGER NOT NULL, first_t INTEGER NOT NULL, last_t INTEGER NOT NULL)");
         db.execSQL("CREATE TABLE places (id INTEGER PRIMARY KEY AUTOINCREMENT, lat REAL NOT NULL, lon REAL NOT NULL, status INTEGER NOT NULL, name TEXT, cat TEXT, visits INTEGER NOT NULL DEFAULT 0, t INTEGER NOT NULL, minutes INTEGER NOT NULL DEFAULT 0)");
+        createV2(db);
+    }
+
+    private void createV2(SQLiteDatabase db) {
+        db.execSQL("CREATE TABLE IF NOT EXISTS visits (kind TEXT NOT NULL, name TEXT NOT NULL, country TEXT, first_t INTEGER NOT NULL, PRIMARY KEY (kind, name)) WITHOUT ROWID");
+        db.execSQL("CREATE TABLE IF NOT EXISTS geo_cells (k INTEGER PRIMARY KEY)");
+        db.execSQL("CREATE TABLE IF NOT EXISTS photos (id INTEGER PRIMARY KEY AUTOINCREMENT, lat REAL NOT NULL, lon REAL NOT NULL, t INTEGER NOT NULL, file TEXT NOT NULL)");
     }
 
     @Override
     public void onUpgrade(SQLiteDatabase db, int oldV, int newV) {
+        if (oldV < 2) createV2(db);
+    }
+
+    // ---------- passport ----------
+
+    public static class Visit {
+        public String kind, name, country;
+        public long first;
+    }
+
+    /** Returns true if this ~5 km cell was not looked up before (and marks it). */
+    public boolean claimGeoCell(long key) {
+        SQLiteStatement st = getWritableDatabase().compileStatement("INSERT OR IGNORE INTO geo_cells (k) VALUES (?)");
+        st.bindLong(1, key);
+        long r = st.executeInsert();
+        st.close();
+        return r != -1;
+    }
+
+    public void releaseGeoCell(long key) {
+        getWritableDatabase().delete("geo_cells", "k = ?", new String[]{String.valueOf(key)});
+    }
+
+    /** Returns true if this is the first visit. */
+    public boolean addVisit(String kind, String name, String country, long t) {
+        ContentValues v = new ContentValues();
+        v.put("kind", kind);
+        v.put("name", name);
+        v.put("country", country);
+        v.put("first_t", t);
+        long r = getWritableDatabase().insertWithOnConflict("visits", null, v, SQLiteDatabase.CONFLICT_IGNORE);
+        if (r == -1) {
+            getWritableDatabase().execSQL("UPDATE visits SET first_t = MIN(first_t, ?) WHERE kind = ? AND name = ?", new Object[]{t, kind, name});
+            return false;
+        }
+        return true;
+    }
+
+    public List<Visit> visits(String kind) {
+        List<Visit> out = new ArrayList<>();
+        Cursor c = getReadableDatabase().rawQuery("SELECT kind, name, country, first_t FROM visits WHERE kind = ? ORDER BY first_t DESC",
+                new String[]{kind});
+        try {
+            while (c.moveToNext()) {
+                Visit v = new Visit();
+                v.kind = c.getString(0);
+                v.name = c.getString(1);
+                v.country = c.getString(2);
+                v.first = c.getLong(3);
+                out.add(v);
+            }
+        } finally {
+            c.close();
+        }
+        return out;
+    }
+
+    // ---------- photos ----------
+
+    public static class Photo {
+        public long id, t;
+        public double lat, lon;
+        public String file;
+    }
+
+    public long insertPhoto(double lat, double lon, long t, String file) {
+        ContentValues v = new ContentValues();
+        v.put("lat", lat);
+        v.put("lon", lon);
+        v.put("t", t);
+        v.put("file", file);
+        return getWritableDatabase().insert("photos", null, v);
+    }
+
+    public List<Photo> photos() {
+        List<Photo> out = new ArrayList<>();
+        Cursor c = getReadableDatabase().rawQuery("SELECT id, lat, lon, t, file FROM photos ORDER BY t DESC", null);
+        try {
+            while (c.moveToNext()) {
+                Photo p = new Photo();
+                p.id = c.getLong(0);
+                p.lat = c.getDouble(1);
+                p.lon = c.getDouble(2);
+                p.t = c.getLong(3);
+                p.file = c.getString(4);
+                out.add(p);
+            }
+        } finally {
+            c.close();
+        }
+        return out;
+    }
+
+    public void deletePhoto(long id) {
+        getWritableDatabase().delete("photos", "id = ?", new String[]{String.valueOf(id)});
     }
 
     // ---------- writing ----------
@@ -296,6 +398,6 @@ public class Db extends SQLiteOpenHelper {
     }
 
     public Cursor allPointsCursor() {
-        return getReadableDatabase().rawQuery("SELECT t, lat, lon, acc FROM points ORDER BY t", null);
+        return getReadableDatabase().rawQuery("SELECT t, lat, lon, acc, day FROM points ORDER BY t", null);
     }
 }

@@ -11,6 +11,8 @@ import android.location.LocationManager;
 import android.os.Bundle;
 import android.os.Looper;
 import android.text.Html;
+import android.graphics.BitmapFactory;
+import android.widget.ScrollView;
 import android.view.Gravity;
 import android.view.MotionEvent;
 import android.view.View;
@@ -45,6 +47,7 @@ public class MapScreen implements Screen, LocationListener {
         marks = new MarksOverlay(a);
         map.getOverlays().add(fog);
         map.getOverlays().add(marks);
+        marks.onPhoto = this::showPhoto;
         map.getController().setZoom(16.0);
         map.getController().setCenter(new GeoPoint(41.55, 60.63));
         map.setOnTouchListener((v, e) -> {
@@ -61,6 +64,12 @@ public class MapScreen implements Screen, LocationListener {
 
         LinearLayout fabs = Ui.col(a);
         fabs.addView(fab(null, R.drawable.ic_layers, v -> chooseLayer()));
+        fabs.addView(fab(null, R.drawable.ic_camera, v -> new AlertDialog.Builder(a)
+                .setTitle("Фото на карту")
+                .setItems(new String[]{"Сфотографировать здесь", "Выбрать из галереи"}, (d, w) -> {
+                    if (w == 0) a.takePhoto(); else a.pickPhoto();
+                })
+                .show()));
         fabs.addView(fab("+", 0, v -> zoom(1)));
         fabs.addView(fab("−", 0, v -> zoom(-1)));
         fabs.addView(fab(null, R.drawable.ic_locate, v -> {
@@ -129,6 +138,33 @@ public class MapScreen implements Screen, LocationListener {
         c.addView(v);
         parent.addView(c, Ui.weight(1));
         return v;
+    }
+
+    private void showPhoto(Db.Photo p) {
+        LinearLayout box = Ui.col(a);
+        box.setPadding(Ui.dp(a, 16), Ui.dp(a, 16), Ui.dp(a, 16), 0);
+        ImageView iv = new ImageView(a);
+        iv.setAdjustViewBounds(true);
+        iv.setImageBitmap(BitmapFactory.decodeFile(PhotoStore.big(a, p.file).getAbsolutePath()));
+        box.addView(iv, Ui.lp(-1, -2));
+        TextView when = Ui.tv(a, Ui.dayTitle(Geo.day(p.t)) + ", " + Ui.hm(p.t), 14, Ui.MUTE, null);
+        when.setPadding(0, Ui.dp(a, 10), 0, 0);
+        box.addView(when);
+        ScrollView sv = new ScrollView(a);
+        sv.addView(box);
+        new AlertDialog.Builder(a)
+                .setView(sv)
+                .setPositiveButton("Закрыть", null)
+                .setNegativeButton("Удалить", (d, w) -> new AlertDialog.Builder(a)
+                        .setMessage("Удалить это фото с карты?")
+                        .setPositiveButton("Удалить", (d2, w2) -> a.io.execute(() -> {
+                            Db.get(a).deletePhoto(p.id);
+                            PhotoStore.delete(a, p.file);
+                            a.runOnUiThread(this::refresh);
+                        }))
+                        .setNegativeButton("Отмена", null)
+                        .show())
+                .show();
     }
 
     private void chooseLayer() {
@@ -230,6 +266,7 @@ public class MapScreen implements Screen, LocationListener {
 
     @Override
     public void refresh() {
+        Maps.apply(map, a);
         fog.refresh();
         startListening();
         a.io.execute(() -> {
@@ -239,9 +276,11 @@ public class MapScreen implements Screen, LocationListener {
             long tc = db.cellsOfDay(td);
             Db.DayStat ds = db.dayStat(td);
             List<Db.Place> pl = db.places();
+            List<Db.Photo> ph = db.photos();
             String st = statusText(db);
             a.runOnUiThread(() -> {
                 marks.places = pl;
+                marks.photos = ph;
                 pill.setText(Html.fromHtml("Открыто <b><font color='#FF6B4A'>" + Ui.area(total * 16.0) + "</font></b>", Html.FROM_HTML_MODE_LEGACY));
                 tKm.setText(Ui.km(ds != null ? ds.meters : 0));
                 tNew.setText(Ui.area(tc * 16.0));
