@@ -1,6 +1,7 @@
 package uz.bekzod.fogmap;
 
 import android.Manifest;
+import android.app.AlertDialog;
 import android.annotation.SuppressLint;
 import android.content.SharedPreferences;
 import android.content.pm.PackageManager;
@@ -29,7 +30,7 @@ public class MapScreen implements Screen, LocationListener {
     private final MapView map;
     private final FogOverlay fog;
     private final MarksOverlay marks;
-    private final TextView pill, status, tKm, tNew, tTime;
+    private final TextView pill, status, tKm, tNew, tTime, credit;
     private boolean follow = true;
     private boolean listening = false;
     private boolean centered = false;
@@ -59,6 +60,7 @@ public class MapScreen implements Screen, LocationListener {
         root.addView(pill, pl);
 
         LinearLayout fabs = Ui.col(a);
+        fabs.addView(fab(null, R.drawable.ic_layers, v -> chooseLayer()));
         fabs.addView(fab("+", 0, v -> zoom(1)));
         fabs.addView(fab("−", 0, v -> zoom(-1)));
         fabs.addView(fab(null, R.drawable.ic_locate, v -> {
@@ -70,6 +72,12 @@ public class MapScreen implements Screen, LocationListener {
         FrameLayout.LayoutParams fl = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.END);
         fl.setMargins(0, Ui.dp(a, 12), Ui.dp(a, 14), 0);
         root.addView(fabs, fl);
+
+        credit = Ui.tv(a, Maps.credit(a), 10, 0xCCFFFFFF, null);
+        credit.setShadowLayer(3, 0, 0, 0xFF000000);
+        FrameLayout.LayoutParams cr = new FrameLayout.LayoutParams(-2, -2, Gravity.TOP | Gravity.START);
+        cr.setMargins(Ui.dp(a, 18), Ui.dp(a, 52), 0, 0);
+        root.addView(credit, cr);
 
         LinearLayout bottom = Ui.col(a);
         status = Ui.tv(a, "", 12, Ui.MUTE, null);
@@ -121,6 +129,18 @@ public class MapScreen implements Screen, LocationListener {
         c.addView(v);
         parent.addView(c, Ui.weight(1));
         return v;
+    }
+
+    private void chooseLayer() {
+        new AlertDialog.Builder(a)
+                .setTitle("Вид карты")
+                .setSingleChoiceItems(Maps.NAMES, Maps.type(a), (d, which) -> {
+                    S.put(a, "map_type", which);
+                    Maps.apply(map, a);
+                    credit.setText(Maps.credit(a));
+                    d.dismiss();
+                })
+                .show();
     }
 
     private void zoom(int dir) {

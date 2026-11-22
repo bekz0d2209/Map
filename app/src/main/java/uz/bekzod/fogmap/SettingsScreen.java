@@ -89,7 +89,7 @@ public class SettingsScreen implements Screen {
         dataBox.addView(action("Импорт из файла", v -> a.importData()));
         col.addView(dataBox);
 
-        TextView ver = Ui.tv(a, "FogMap 1.5 · данные хранятся только на телефоне", 12, Ui.MUTE, null);
+        TextView ver = Ui.tv(a, "FogMap 1.6 · данные хранятся только на телефоне", 12, Ui.MUTE, null);
         ver.setGravity(Gravity.CENTER);
         ver.setPadding(0, Ui.dp(a, 16), 0, 0);
         col.addView(ver, Ui.lp(-1, -2));

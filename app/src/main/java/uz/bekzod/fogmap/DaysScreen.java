@@ -104,6 +104,7 @@ public class DaysScreen implements Screen {
 
     @Override
     public void onShow() {
+        Maps.apply(map, a);
         map.onResume();
         load();
     }
