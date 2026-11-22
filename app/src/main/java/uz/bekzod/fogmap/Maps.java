@@ -29,8 +29,8 @@ public final class Maps {
 
     /** Esri tiles use the {z}/{y}/{x} order. */
     static class Esri extends OnlineTileSourceBase {
-        Esri(String name, String path, String ext) {
-            super(name, 0, 19, 256, ext,
+        Esri(String name, String path, String ext, int maxZoom) {
+            super(name, 0, maxZoom, 256, ext,
                     new String[]{"https://server.arcgisonline.com/ArcGIS/rest/services/" + path + "/MapServer/tile/"});
         }
 
@@ -40,9 +40,11 @@ public final class Maps {
         }
     }
 
-    private static final ITileSource IMAGERY = new Esri("EsriImagery", "World_Imagery", ".jpg");
-    private static final ITileSource ROADS = new Esri("EsriRoads", "Reference/World_Transportation", ".png");
-    private static final ITileSource LABELS = new Esri("EsriLabels", "Reference/World_Boundaries_and_Places", ".png");
+    // Sharp satellite photos for Uzbekistan exist only up to zoom 17; closer we enlarge zoom-17 photos
+    // instead of asking for pictures that don't exist (that was the white screen).
+    private static final ITileSource IMAGERY = new Esri("EsriImagery", "World_Imagery", ".jpg", 17);
+    private static final ITileSource ROADS = new Esri("EsriRoads", "Reference/World_Transportation", ".png", 18);
+    private static final ITileSource LABELS = new Esri("EsriLabels", "Reference/World_Boundaries_and_Places", ".png", 18);
 
     public static int type(Context c) {
         return S.p(c).getInt("map_type", SCHEME);
@@ -81,6 +83,9 @@ public final class Maps {
         }
 
         m.setTileSource(t == SCHEME ? TileSourceFactory.MAPNIK : IMAGERY);
+        // While pictures load, show a dark background instead of a white grid.
+        m.getOverlayManager().getTilesOverlay().setLoadingBackgroundColor(t == SCHEME ? 0xFFE8E4DC : 0xFF1A1F26);
+        m.getOverlayManager().getTilesOverlay().setLoadingLineColor(t == SCHEME ? 0xFFE8E4DC : 0xFF1A1F26);
         if (t == HYBRID) {
             m.getOverlays().add(0, labels(c, LABELS));
             m.getOverlays().add(0, labels(c, ROADS));
