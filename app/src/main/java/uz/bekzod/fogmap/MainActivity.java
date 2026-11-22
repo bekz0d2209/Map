@@ -3,6 +3,8 @@ package uz.bekzod.fogmap;
 import android.Manifest;
 import android.app.Activity;
 import android.app.AlertDialog;
+import android.content.ClipData;
+import android.content.ClipboardManager;
 import android.content.ContentValues;
 import android.content.Context;
 import android.content.Intent;
@@ -64,7 +66,9 @@ public class MainActivity extends Activity {
     private final Runnable tick = new Runnable() {
         @Override
         public void run() {
-            if (cur >= 0) screens[cur].refresh();
+            if (cur >= 0) {
+                try { screens[cur].refresh(); } catch (Exception e) { App.log("refresh " + cur, e); }
+            }
             updateBadge();
             handler.postDelayed(this, 4000);
         }
@@ -97,7 +101,42 @@ public class MainActivity extends Activity {
         mapScreen = new MapScreen(this);
         screens = new Screen[]{mapScreen, new DaysScreen(this), new PlacesScreen(this), new StatsScreen(this), new SettingsScreen(this)};
         show(getIntent().getIntExtra("tab", 0));
-        ensurePermissions();
+        if (!showErrorReport()) ensurePermissions();
+        WatchdogJob.schedule(this);
+    }
+
+    /** If the app crashed last time, show the report so it can be copied and sent. */
+    private boolean showErrorReport() {
+        File f = App.reportFile(this);
+        if (!f.exists() || f.length() == 0) return false;
+        String text;
+        try {
+            byte[] b = new byte[(int) Math.min(f.length(), 60000)];
+            java.io.FileInputStream in = new java.io.FileInputStream(f);
+            int n = in.read(b);
+            in.close();
+            text = new String(b, 0, Math.max(0, n), StandardCharsets.UTF_8);
+        } catch (Exception e) {
+            text = "";
+        }
+        f.delete();
+        if (text.isEmpty()) return false;
+        final String report = text;
+        new AlertDialog.Builder(this)
+                .setTitle("Была ошибка")
+                .setMessage("В прошлый раз в приложении произошла ошибка. Нажми «Скопировать» и вставь текст в чат с Claude, чтобы её исправить.")
+                .setPositiveButton("Скопировать", (d, w) -> {
+                    try {
+                        ClipboardManager cm = (ClipboardManager) getSystemService(Context.CLIPBOARD_SERVICE);
+                        cm.setPrimaryClip(ClipData.newPlainText("FogMap error", report));
+                        toast("Скопировано");
+                    } catch (Exception ignored) { }
+                    ensurePermissions();
+                })
+                .setNegativeButton("Закрыть", (d, w) -> ensurePermissions())
+                .setCancelable(false)
+                .show();
+        return true;
     }
 
     private View buildNav() {
@@ -142,15 +181,21 @@ public class MainActivity extends Activity {
             screens[i].refresh();
             return;
         }
-        if (cur >= 0) screens[cur].onHide();
+        if (cur >= 0) {
+            try { screens[cur].onHide(); } catch (Exception e) { App.log("onHide " + cur, e); }
+        }
         content.removeAllViews();
-        content.addView(screens[i].view(), new FrameLayout.LayoutParams(-1, -1));
+        View v = screens[i].view();
+        if (v.getParent() != null) ((android.view.ViewGroup) v.getParent()).removeView(v);
+        content.addView(v, new FrameLayout.LayoutParams(-1, -1));
         cur = i;
         for (int k = 0; k < 5; k++) {
             navIcons[k].setColorFilter(k == i ? Ui.ACC : Ui.MUTE);
             navLabels[k].setTextColor(k == i ? Ui.INK : Ui.MUTE);
         }
-        if (resumed) screens[i].onShow();
+        if (resumed) {
+            try { screens[i].onShow(); } catch (Exception e) { App.log("onShow " + i, e); toast("Ошибка, отчёт сохранён"); }
+        }
     }
 
     void showMapAt(double lat, double lon) {
@@ -188,16 +233,20 @@ public class MainActivity extends Activity {
     protected void onResume() {
         super.onResume();
         resumed = true;
-        if (cur >= 0) screens[cur].onShow();
+        if (cur >= 0) {
+            try { screens[cur].onShow(); } catch (Exception e) { App.log("onShow " + cur, e); }
+        }
         handler.post(tick);
-        if (hasFine()) TrackerService.start(this);
+        TrackerService.start(this);
     }
 
     @Override
     protected void onPause() {
         resumed = false;
         handler.removeCallbacks(tick);
-        if (cur >= 0) screens[cur].onHide();
+        if (cur >= 0) {
+            try { screens[cur].onHide(); } catch (Exception e) { App.log("onHide " + cur, e); }
+        }
         super.onPause();
     }
 

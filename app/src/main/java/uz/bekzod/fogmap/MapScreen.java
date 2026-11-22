@@ -237,12 +237,13 @@ public class MapScreen implements Screen, LocationListener {
         long now = System.currentTimeMillis();
         long fix = p.getLong("fix_t", 0), st = p.getLong("stay_t", 0);
         if (fix == 0) return "Ищу GPS… выйди на открытое место";
+        String eco = p.getBoolean("gps_sleep", false) ? " · GPS отдыхает" : "";
         if (st > 0 && now - st >= 120000) {
             int m = (int) ((now - st) / 60000);
             Db.Place pl = db.placeNear(p.getFloat("stay_lat", 0), p.getFloat("stay_lon", 0), 60);
-            if (pl != null && pl.status == Db.SAVED) return "Стою: " + pl.name + ", " + Ui.dur(m * 60L);
-            if (pl != null && pl.status == Db.PENDING) return "Стою на месте " + Ui.dur(m * 60L) + ", вопрос отправлен";
-            return "Стою на месте " + Ui.dur(m * 60L);
+            if (pl != null && pl.status == Db.SAVED) return "Стою: " + pl.name + ", " + Ui.dur(m * 60L) + eco;
+            if (pl != null && pl.status == Db.PENDING) return "Стою на месте " + Ui.dur(m * 60L) + ", вопрос отправлен" + eco;
+            return "Стою на месте " + Ui.dur(m * 60L) + eco;
         }
         return "В движении";
     }

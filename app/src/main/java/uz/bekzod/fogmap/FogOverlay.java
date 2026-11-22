@@ -84,6 +84,14 @@ public class FogOverlay extends Overlay {
     @Override
     public void draw(Canvas c, MapView map, boolean shadow) {
         if (shadow) return;
+        try {
+            drawFog(c, map);
+        } catch (Exception e) {
+            App.log("FogOverlay.draw", e);
+        }
+    }
+
+    private void drawFog(Canvas c, MapView map) {
         Projection p = map.getProjection();
         BoundingBox bb = p.getBoundingBox();
         double north = bb.getLatNorth(), south = bb.getLatSouth(), west = bb.getLonWest(), east = bb.getLonEast();

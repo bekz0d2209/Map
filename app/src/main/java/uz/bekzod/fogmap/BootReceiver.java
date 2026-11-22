@@ -8,6 +8,7 @@ import android.content.Intent;
 public class BootReceiver extends BroadcastReceiver {
     @Override
     public void onReceive(Context context, Intent intent) {
-        TrackerService.start(context);
+        WatchdogJob.schedule(context);
+        if (Perms.canTrack(context)) TrackerService.start(context);
     }
 }

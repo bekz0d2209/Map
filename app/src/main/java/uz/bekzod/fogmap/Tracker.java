@@ -15,7 +15,7 @@ public class Tracker {
         void onNewPlace(long placeId, int minutes);
     }
 
-    private static final float MAX_ACC_TRACK = 25f;
+    private static final float MAX_ACC_TRACK = 30f;
     private static final float MAX_ACC_STAY = 80f;
     private static final double STAY_RADIUS = 50.0;
 
@@ -34,6 +34,16 @@ public class Tracker {
     private boolean asked = false;
     private long stayPlace = -1;
     private long lastFixSaved = 0;
+    private volatile long lastMove = System.currentTimeMillis();
+    private volatile double[] lastPos;
+
+    /** Time of the last real movement (a point that was not GPS jitter). */
+    public long lastMove() { return lastMove; }
+
+    public void markMoving(long t) { lastMove = t; }
+
+    /** {lat, lon} of the last recorded point, or null. */
+    public double[] lastPos() { return lastPos; }
 
     public Tracker(Context ctx, Listener listener, boolean importing) {
         this.ctx = ctx.getApplicationContext();
@@ -45,19 +55,20 @@ public class Tracker {
 
     public void onFix(long t, double lat, double lon, float acc, boolean gps) {
         if (!importing) {
-            if (acc <= MAX_ACC_STAY) stay(t, lat, lon);
+            if (acc <= MAX_ACC_STAY) stay(t, lat, lon, acc);
             if (t - lastFixSaved > 10000) {
                 lastFixSaved = t;
                 sp.edit().putLong("fix_t", t).apply();
             }
         }
-        if (gps && acc <= MAX_ACC_TRACK) track(t, lat, lon, acc);
+        if (acc <= 50) lastPos = new double[]{lat, lon};
+        if (acc <= MAX_ACC_TRACK) track(t, lat, lon, acc);
     }
 
     // ---------- staying in one place ----------
 
-    private void stay(long t, double lat, double lon) {
-        if (Double.isNaN(aLat) || Geo.dist(aLat, aLon, lat, lon) > STAY_RADIUS) {
+    private void stay(long t, double lat, double lon, float acc) {
+        if (Double.isNaN(aLat) || Geo.dist(aLat, aLon, lat, lon) > Math.max(STAY_RADIUS, acc)) {
             aLat = lat;
             aLon = lon;
             aT = t;
@@ -100,15 +111,20 @@ public class Tracker {
 
     private void track(long t, double lat, double lon, float acc) {
         int day = Geo.day(t);
-        boolean cont = !Double.isNaN(lastLat) && t - lastT <= 120000L && t > lastT && Geo.day(lastT) == day;
-        double d = cont ? Geo.dist(lastLat, lastLon, lat, lon) : 0;
-        if (cont && d < 3.0) {          // standing still: ignore GPS jitter
-            lastT = t;
+        boolean same = !Double.isNaN(lastLat) && t > lastT && Geo.day(lastT) == day;
+        double d = same ? Geo.dist(lastLat, lastLon, lat, lon) : 0;
+        // Standing still: GPS "drifts" by a few metres even when you don't move. Ignore that.
+        if (same && d < Math.max(6.0, acc)) {
+            if (t - lastT > 120000L) lastT = t - 120000L;   // keep the line continuous after a stop
             return;
         }
+        long dtSec = Math.max(1, (t - lastT) / 1000);
+        // Continuous if the jump is physically possible (walking, car, train: up to 250 km/h).
+        boolean cont = same && dtSec <= 180 && d / dtSec <= 70.0;
         db.insertPoint(t, lat, lon, acc, day);
-        if (cont && d <= 150.0) {
-            long dtSec = Math.max(1, (t - lastT) / 1000);
+        lastMove = t;
+        lastPos = new double[]{lat, lon};
+        if (cont) {
             long moving = d / dtSec > 0.4 ? dtSec : 0;
             db.addDayStat(day, d, moving, t);
             int steps = Math.max(1, (int) Math.ceil(d));

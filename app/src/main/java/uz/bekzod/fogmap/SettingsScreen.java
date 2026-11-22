@@ -14,6 +14,7 @@ import java.util.List;
 public class SettingsScreen implements Screen {
     private final MainActivity a;
     private final ScrollView root;
+    private TextView stBg, stBat, stLast;
 
     public SettingsScreen(MainActivity a) {
         this.a = a;
@@ -22,6 +23,20 @@ public class SettingsScreen implements Screen {
         col.setPadding(Ui.dp(a, 16), Ui.dp(a, 8), Ui.dp(a, 16), Ui.dp(a, 24));
         root.addView(col);
         col.addView(Ui.title(a, "Настройки"));
+
+        col.addView(Ui.section(a, "Работа в фоне"));
+        LinearLayout bgBox = box();
+        stBg = status(bgBox, "Геолокация «Всегда»", v -> Perms.openAppSettings(a));
+        bgBox.addView(divider());
+        stBat = status(bgBox, "Без ограничений батареи", v -> Perms.askBattery(a));
+        bgBox.addView(divider());
+        TextView auto = status(bgBox, "Автозапуск (Xiaomi, Huawei, Oppo, Vivo)", v -> Perms.openAutostart(a));
+        auto.setText("Открыть настройки ›");
+        auto.setTextColor(Ui.ACC);
+        bgBox.addView(divider());
+        stLast = status(bgBox, "Последняя точка GPS", null);
+        bgBox.addView(hint("Если что-то выключено, нажми на строку и включи. Иначе телефон может останавливать FogMap, когда приложение закрыто."));
+        col.addView(bgBox);
 
         col.addView(Ui.section(a, "Туман"));
         LinearLayout fogBox = box();
@@ -64,7 +79,7 @@ public class SettingsScreen implements Screen {
         gpsBox.addView(head("Точность", null));
         gpsBox.addView(chips(new String[]{"Высокая", "Экономия батареи"}, new int[]{0, 1}, S.eco(a) ? 1 : 0,
                 v -> S.putBool(a, "eco", v == 1)));
-        gpsBox.addView(hint("«Экономия» реже обновляет GPS: батарея держит дольше, но след будет менее точным"));
+        gpsBox.addView(hint("Когда стоишь на месте, GPS сам засыпает и просыпается, как только пойдёшь или поедешь. «Экономия» дополнительно реже обновляет GPS в движении."));
         col.addView(gpsBox);
 
         col.addView(Ui.section(a, "Данные"));
@@ -74,10 +89,27 @@ public class SettingsScreen implements Screen {
         dataBox.addView(action("Импорт из файла", v -> a.importData()));
         col.addView(dataBox);
 
-        TextView ver = Ui.tv(a, "FogMap 1.3 · данные хранятся только на телефоне", 12, Ui.MUTE, null);
+        TextView ver = Ui.tv(a, "FogMap 1.5 · данные хранятся только на телефоне", 12, Ui.MUTE, null);
         ver.setGravity(Gravity.CENTER);
         ver.setPadding(0, Ui.dp(a, 16), 0, 0);
         col.addView(ver, Ui.lp(-1, -2));
+    }
+
+    private TextView status(LinearLayout box, String label, View.OnClickListener l) {
+        LinearLayout r = Ui.col(a);
+        r.setPadding(0, Ui.dp(a, 12), 0, 0);
+        r.addView(Ui.tv(a, label, 15, Ui.INK, null));
+        TextView v = Ui.tv(a, "…", 13, Ui.MUTE, null);
+        v.setPadding(0, Ui.dp(a, 2), 0, 0);
+        r.addView(v);
+        if (l != null) r.setOnClickListener(l);
+        box.addView(r);
+        return v;
+    }
+
+    private void setStatus(TextView v, boolean ok) {
+        v.setText(ok ? "✓ Включено" : "✗ Выключено, нажми, чтобы включить");
+        v.setTextColor(ok ? Ui.OK : Ui.ACC);
     }
 
     interface IntCb {
@@ -176,6 +208,7 @@ public class SettingsScreen implements Screen {
 
     @Override
     public void onShow() {
+        refresh();
     }
 
     @Override
@@ -184,5 +217,15 @@ public class SettingsScreen implements Screen {
 
     @Override
     public void refresh() {
+        setStatus(stBg, Perms.background(a));
+        setStatus(stBat, Perms.battery(a));
+        long fix = S.p(a).getLong("fix_t", 0);
+        String svc = TrackerService.running ? "работает" : "не запущена";
+        if (fix == 0) stLast.setText("Ещё не было · служба " + svc);
+        else {
+            long m = (System.currentTimeMillis() - fix) / 60000;
+            stLast.setText((m < 1 ? "Только что" : Ui.dur(m * 60) + " назад") + " · служба " + svc);
+        }
+        stLast.setTextColor(TrackerService.running ? Ui.OK : Ui.ACC);
     }
 }

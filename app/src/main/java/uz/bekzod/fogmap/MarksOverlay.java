@@ -44,6 +44,14 @@ public class MarksOverlay extends Overlay {
     @Override
     public void draw(Canvas c, MapView map, boolean shadow) {
         if (shadow) return;
+        try {
+            drawMarks(c, map);
+        } catch (Exception e) {
+            App.log("MarksOverlay.draw", e);
+        }
+    }
+
+    private void drawMarks(Canvas c, MapView map) {
         Projection p = map.getProjection();
         for (Db.Place pl : places) {
             if (pl.status == Db.IGNORED) continue;

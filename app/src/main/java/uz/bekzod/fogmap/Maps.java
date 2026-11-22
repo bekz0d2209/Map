@@ -19,6 +19,7 @@ public final class Maps {
         m.setMinZoomLevel(3.0);
         m.setMaxZoomLevel(20.0);
         m.setTilesScaledToDpi(true);
+        m.setDestroyMode(false);
         if (!interactive) m.setOnTouchListener((v, e) -> true);
         return m;
     }
